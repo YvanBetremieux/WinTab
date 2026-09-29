@@ -1,58 +1,101 @@
+# Every push to main: tests, signed build, GitHub release + Sparkle appcast.
+# See docs/superpowers/specs/2026-09-29-auto-update-design.md.
 name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to (re)build a release for, e.g. v1.0.0"
-        required: true
+
+# Releases are serialised: a push arriving mid-release waits instead of cancelling
+# it (a half-published version number would be lost).
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: macos-26
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
 
       - name: Show environment
         run: |
           sw_vers
           swift --version
 
-      - name: Run tests
-        run: swift test
-
-      - name: Build and sign the app bundle
-        env:
-          # v1.2.3 -> 1.2.3. No signing identity exists on the runner, so
-          # build-app.sh falls back to ad-hoc signing (see README > Install).
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: VERSION="${TAG#v}" ./scripts/build-app.sh
-
-      - name: Package
+      - name: Tests
         run: |
+          swift test
+          scripts/test-make-appcast.sh
+
+      - name: Import the "WinTab Dev" certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.CERT_P12_BASE64 }}
+          CERT_P12_PASSWORD: ${{ secrets.CERT_P12_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/wintab.keychain-db"
+          KP=$(openssl rand -base64 24)
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/wintab.p12"
+          security import "$RUNNER_TEMP/wintab.p12" -k "$KC" -P "$CERT_P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/wintab.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-identity -p codesigning "$KC" | grep -q '"WinTab Dev"'
+
+      - name: Version
+        run: |
+          echo "WINTAB_VERSION=$(tr -d '[:space:]' < VERSION).$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          echo "WINTAB_BUILD=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          WINTAB_FEED_URL: https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml
+          WINTAB_REQUIRE_IDENTITY: "1"
+        run: |
+          scripts/build-app.sh
+          scripts/check-bundle.sh WinTab.app "$WINTAB_VERSION" "$WINTAB_BUILD"
           # ditto (not zip) so the code signature survives the round-trip.
-          ditto -c -k --keepParent WinTab.app WinTab.zip
-          shasum -a 256 WinTab.zip | tee WinTab.zip.sha256
-          codesign --verify --strict WinTab.app && echo "signature verified"
+          ditto -c -k --keepParent WinTab.app "WinTab-$WINTAB_VERSION.zip"
+          shasum -a 256 "WinTab-$WINTAB_VERSION.zip" | tee "WinTab-$WINTAB_VERSION.zip.sha256"
+
+      - name: Appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases"
+          scripts/make-appcast.sh "WinTab-$WINTAB_VERSION.zip" "$WINTAB_VERSION" "$WINTAB_BUILD" \
+            "$BASE/download/v$WINTAB_VERSION/WinTab-$WINTAB_VERSION.zip" \
+            "$BASE/tag/v$WINTAB_VERSION" \
+            appcast.xml
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           cat > notes.md <<'NOTES'
-          ## Install
+          ## Install (first time only)
 
-          1. Download `WinTab.zip` below and unzip it into `/Applications`.
-          2. Lift the download quarantine — the app is ad-hoc signed, not
-             notarized by Apple, so macOS blocks the first launch:
+          1. Download the `WinTab-*.zip` below and unzip it into `/Applications`.
+          2. Lift the download quarantine — the app is signed with a self-signed
+             certificate, not notarized by Apple, so macOS blocks the first launch:
 
               ```bash
               xattr -dr com.apple.quarantine /Applications/WinTab.app
@@ -64,10 +107,14 @@ jobs:
           3. Grant **Accessibility** and **Screen Recording** in
              **System Settings → Privacy & Security**, then relaunch.
 
-          Requires macOS 14 or later. Verify the download with the
-          `WinTab.zip.sha256` asset.
+          After that, WinTab updates itself and keeps both permissions.
+          Requires macOS 14 or later. Verify the download with the `.sha256` asset.
           NOTES
-          gh release create "$TAG" \
-            WinTab.zip WinTab.zip.sha256 \
-            --title "WinTab ${TAG#v}" \
+          gh release create "v$WINTAB_VERSION" \
+            "WinTab-$WINTAB_VERSION.zip" "WinTab-$WINTAB_VERSION.zip.sha256" appcast.xml \
+            --title "WinTab $WINTAB_VERSION" --target "$GITHUB_SHA" --latest \
             --notes-file notes.md
+
+      - name: Delete the keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/wintab.keychain-db" 2>/dev/null || true
