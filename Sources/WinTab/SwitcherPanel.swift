@@ -17,6 +17,9 @@ final class SwitcherPanel: NSObject, SwitcherViewing {
     private var panel: NSPanel?
     private var placed: [(tile: WindowTileView, group: Int, depth: Int)] = []
 
+    /// Padding around the grid, also kept around a tile scrolled into view.
+    private static let pad: CGFloat = 16
+
     func show(groups: [[WindowInfo]], groupIndex: Int, depthIndex: Int) {
         build(groups: groups, groupIndex: groupIndex, depthIndex: depthIndex)
     }
@@ -25,6 +28,15 @@ final class SwitcherPanel: NSObject, SwitcherViewing {
         for entry in placed {
             entry.tile.setSelected(entry.group == groupIndex && entry.depth == depthIndex)
         }
+        revealTile(group: groupIndex, depth: depthIndex)
+    }
+
+    /// Scrolls the grid just enough for the tile to be fully visible, so stepping
+    /// with Tab past the panel's edge follows the selection.
+    private func revealTile(group: Int, depth: Int) {
+        guard let tile = placed.first(where: { $0.group == group && $0.depth == depth })?.tile
+        else { return }
+        tile.scrollToVisible(tile.bounds.insetBy(dx: -Self.pad, dy: -Self.pad))
     }
 
     func hide() {
@@ -40,7 +52,7 @@ final class SwitcherPanel: NSObject, SwitcherViewing {
         guard let screen = NSScreen.main ?? NSScreen.screens.first, !groups.isEmpty else { return }
 
         let gap: CGFloat = 12
-        let pad: CGFloat = 16
+        let pad = Self.pad
         let horizontal = Preferences.orientation == .horizontal
         let style: TileStyle = horizontal ? .card : .row
         let thumbnail = Preferences.tileSize.thumbnailSize
@@ -94,6 +106,8 @@ final class SwitcherPanel: NSObject, SwitcherViewing {
             scroll.contentView.scroll(to: NSPoint(x: 0, y: docHeight - contentHeight))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
+        // The pre-selected window may sit beyond the visible area.
+        revealTile(group: groupIndex, depth: depthIndex)
 
         let visual = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: contentHeight))
         visual.material = .hudWindow
