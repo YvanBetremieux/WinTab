@@ -1,0 +1,7 @@
+# Build artifacts
+.build/
+WinTab.app/
+.DS_Store
+
+# Ephemeral tooling state (brainstorm server, pids, ports)
+.superpowers/
