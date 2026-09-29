@@ -114,7 +114,7 @@ if [ -e "$FW/XPCServices/Downloader.xpc" ]; then
     sign --preserve-metadata=entitlements "$FW/XPCServices/Downloader.xpc"
 fi
 sign "$APP_DIR/Contents/Frameworks/Sparkle.framework"
-sign "$APP_DIR"
+sign --entitlements scripts/WinTab.entitlements "$APP_DIR"
 codesign --verify --strict --deep "$APP_DIR"
 
 if [ "${1:-}" = "--install" ]; then

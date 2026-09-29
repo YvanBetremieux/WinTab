@@ -21,6 +21,9 @@ permissions:
 
 jobs:
   release:
+    # workflow_dispatch can target any branch; installed apps follow releases/latest,
+    # so only main may ever publish.
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-26
     timeout-minutes: 45
     steps:

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Signed with a self-signed identity, which has no Team ID: hardened-runtime
+      library validation would therefore refuse to load Sparkle.framework.
+      Without a Developer ID this is the only way to embed a third-party framework.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict>
+</plist>
