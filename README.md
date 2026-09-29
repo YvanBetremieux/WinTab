@@ -12,12 +12,13 @@ Requires macOS 14 or later (Apple Silicon and Intel).
 
 ## Install
 
-Download the latest `WinTab.zip` from the
-[**Releases**](https://github.com/YvanBetremieux/WinTab/releases/latest) page, then:
+Download the latest `WinTab-*.zip` from the
+[**Releases**](https://github.com/YvanBetremieux/WinTab/releases/latest) page, then,
+**the first time only**:
 
 ```bash
 # 1. Unzip and install
-unzip ~/Downloads/WinTab.zip -d /Applications
+unzip ~/Downloads/WinTab-*.zip -d /Applications
 
 # 2. Lift the download quarantine (see "Why the scary warning?" below)
 xattr -dr com.apple.quarantine /Applications/WinTab.app
@@ -36,19 +37,25 @@ relaunch the app:
 
 Without them WinTab starts but shows an empty switcher.
 
+### Updates
+
+WinTab updates itself (Sparkle): it checks at launch and every 24 hours, downloads in
+the background and relaunches as soon as the switcher is closed. Every release is
+signed with the same certificate, so Accessibility and Screen Recording are kept.
+Untick **Installer automatiquement les mises à jour** in the menu to install only
+when you click **Redémarrer pour installer…**; **Rechercher les mises à jour…**
+checks immediately.
+
 ### Why the scary warning?
 
-Releases are **ad-hoc signed**, not signed with a paid Apple Developer ID, so
-they cannot be notarized by Apple. macOS therefore refuses the first launch of
-the downloaded app. The `xattr` command above removes the quarantine flag that
-triggers this.
+Releases are signed with a self-signed certificate ("WinTab Dev"), not a paid Apple
+Developer ID, so they cannot be notarized: macOS refuses the first launch of the
+downloaded app, and the `xattr` command above removes the quarantine flag that
+triggers this. Terminal-free alternative: double-click the app, let it be blocked,
+then go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
-Terminal-free alternative: double-click the app, let it be blocked, then go to
-**System Settings → Privacy & Security** and click **Open Anyway**.
-
-Consequence of ad-hoc signing: the code identity changes with every release, so
-macOS asks you to re-grant Accessibility and Screen Recording after each update.
-Building from source with `scripts/make-signing-cert.sh` avoids this locally.
+Because every release carries the same signature, macOS keeps your permissions across
+updates, and Sparkle refuses an update signed by anything else.
 
 ---
 
@@ -84,20 +91,21 @@ defaults import com.yvanb.wintab wintab-prefs.plist   # new Mac
 ## Build from source
 
 **Requirements:** macOS 14+, and Xcode or Command Line Tools providing Swift 6.4
-or newer (`swift --version`). No third-party dependencies.
+or newer (`swift --version`). The only dependency, [Sparkle](https://sparkle-project.org), is fetched by SwiftPM.
 
 ```bash
 git clone https://github.com/YvanBetremieux/WinTab.git
 cd WinTab
 
-swift test                        # 24 tests across 5 suites
+swift test                        # 34 tests across 6 suites
 
 ./scripts/make-signing-cert.sh    # run once — see below
 ./scripts/build-app.sh --install  # build, sign, install to /Applications, relaunch
 ```
 
 `build-app.sh` without `--install` just leaves `WinTab.app` in the working
-directory. `VERSION=1.2.3 ./scripts/build-app.sh` stamps the bundle version.
+directory. Local builds are stamped `<VERSION>.0` and have **no updater** (no
+Sparkle feed), so a release never overwrites the build you are working on.
 
 ### `make-signing-cert.sh` — run it once
 
@@ -150,6 +158,7 @@ Sources/SwitcherCore/   Pure logic, no system frameworks — fully unit-tested
   GroupedSelection      Cursor over groups/windows (next, prev, deeper, …)
   SwitcherController    Orchestration: open, navigate, close, commit, cancel
   ShortcutConfig        Shortcut model + matcher
+  UpdateInstallGate     When to install a downloaded update
   KeyModifiers          Modifier flag set
   SwitcherProtocols     Ports implemented by the system layer
 
@@ -165,10 +174,12 @@ Sources/WinTab/         System layer (AppKit, ScreenCaptureKit, Accessibility)
   StatusItemController  Menu-bar icon and its menu
   Preferences           UserDefaults-backed settings
   Permissions           Accessibility / Screen Recording checks
+  SparkleUpdater        Sparkle → UpdateInstallGate bridge
 
 Tests/SwitcherCoreTests/   swift-testing suites for SwitcherCore
 docs/superpowers/          Original design spec and implementation plan
-scripts/                   Build and signing scripts
+scripts/                   Build, signing, bundle check and appcast scripts
+VERSION                    major.minor of the next releases
 ```
 
 The split is deliberate: everything that can be tested without a window server
@@ -179,17 +190,22 @@ frameworks. Put new logic in `SwitcherCore` with tests.
 
 ## Releasing
 
-Releases are built by GitHub Actions on a macOS runner
-([`.github/workflows/release.yml`](.github/workflows/release.yml)) — never from a
-local machine, so the artifact is always reproducible from a clean checkout.
+Every push to `main` that touches more than docs (`**/*.md`, `docs/**`) publishes a
+release, built by GitHub Actions on a macOS runner
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) — never from a local
+machine. **Pushing to `main` ships to every installed copy within a day.**
 
-```bash
-git tag v1.0.1
-git push origin v1.0.1
-```
+The version is `<VERSION>.<run number>` (e.g. `1.0.42`); edit [`VERSION`](VERSION) to
+move to `1.1`. The workflow runs the tests, imports the "WinTab Dev" certificate,
+builds and checks the bundle (`scripts/check-bundle.sh`), zips it with `ditto`,
+writes an EdDSA-signed `appcast.xml` (`scripts/make-appcast.sh`) and publishes the
+zip, its SHA-256 and the appcast. Apps read
+`releases/latest/download/appcast.xml`. `workflow_dispatch` re-runs it by hand.
 
-The workflow runs the tests, builds and signs the bundle, stamps the version
-from the tag, zips it with `ditto` (preserving the signature), and publishes a
-release with `WinTab.zip` plus its SHA-256 checksum.
+Secrets (set once with `gh secret set`):
 
-`workflow_dispatch` can also be used to re-run a release for an existing tag.
+| Secret | Content |
+|---|---|
+| `CERT_P12_BASE64` | the "WinTab Dev" identity as a `.p12`, base64 (`P12_OUT=… P12_PASS=… scripts/make-signing-cert.sh`) |
+| `CERT_P12_PASSWORD` | that `.p12`'s password |
+| `SPARKLE_ED_PRIVATE_KEY` | `generate_keys --account wintab -x <file>`; the public half is `scripts/sparkle-public-key.txt` |

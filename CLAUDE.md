@@ -6,12 +6,13 @@ Per-window Alt-Tab replacement for macOS. Menu-bar app, no Dock icon. See
 ## Commands
 
 ```bash
-swift test                        # 24 tests, 5 suites — run this before claiming anything works
+swift test                        # 34 tests, 6 suites — run this before claiming anything works
 ./scripts/build-app.sh            # build + sign WinTab.app in the working directory
 ./scripts/build-app.sh --install  # …and copy to /Applications and relaunch
 ```
 
-There are no dependencies to fetch and no generated files to refresh.
+The only dependency, Sparkle, is fetched by SwiftPM on the first build. Local
+builds have no Sparkle feed, so they never self-update.
 
 ## Things that will waste your time if you don't know them
 
@@ -46,6 +47,6 @@ Personal project. The repo-local identity is `yvan.betremieux@gmail.com` — the
 papernest work address must never appear in a commit here. Don't push without
 being asked.
 
-Pushing a `v*` tag triggers the release workflow, which builds on a macOS runner
-and publishes `WinTab.zip` to GitHub Releases. Tags are therefore user-visible
-actions: don't create one on your own initiative.
+**Every push to `main` (beyond docs) publishes a release that installed copies pick
+up automatically.** Never push without Yvan's explicit go-ahead for that push, and
+never create release tags by hand — the workflow does it.
