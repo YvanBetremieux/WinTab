@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build a release for, e.g. v1.0.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Show environment
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build and sign the app bundle
+        env:
+          # v1.2.3 -> 1.2.3. No signing identity exists on the runner, so
+          # build-app.sh falls back to ad-hoc signing (see README > Install).
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: VERSION="${TAG#v}" ./scripts/build-app.sh
+
+      - name: Package
+        run: |
+          # ditto (not zip) so the code signature survives the round-trip.
+          ditto -c -k --keepParent WinTab.app WinTab.zip
+          shasum -a 256 WinTab.zip | tee WinTab.zip.sha256
+          codesign --verify --strict WinTab.app && echo "signature verified"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          cat > notes.md <<'NOTES'
+          ## Install
+
+          1. Download `WinTab.zip` below and unzip it into `/Applications`.
+          2. Lift the download quarantine — the app is ad-hoc signed, not
+             notarized by Apple, so macOS blocks the first launch:
+
+              ```bash
+              xattr -dr com.apple.quarantine /Applications/WinTab.app
+              open /Applications/WinTab.app
+              ```
+
+              Without a terminal: double-click, let it be blocked, then
+              **System Settings → Privacy & Security → Open Anyway**.
+          3. Grant **Accessibility** and **Screen Recording** in
+             **System Settings → Privacy & Security**, then relaunch.
+
+          Requires macOS 14 or later. Verify the download with the
+          `WinTab.zip.sha256` asset.
+          NOTES
+          gh release create "$TAG" \
+            WinTab.zip WinTab.zip.sha256 \
+            --title "WinTab ${TAG#v}" \
+            --notes-file notes.md
