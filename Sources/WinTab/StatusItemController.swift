@@ -8,6 +8,10 @@ final class StatusItemController {
     )
 
     var onShortcutChange: ((ShortcutConfig) -> Void)?
+    var updater: SparkleUpdater?
+    var updateGate: UpdateInstallGate?
+
+    func refresh() { rebuildMenu() }
 
     func install() {
         statusItem.button?.image = NSImage(
@@ -19,6 +23,33 @@ final class StatusItemController {
     private func rebuildMenu() {
         let menu = NSMenu()
         let mods = Preferences.shortcut.modifiers
+
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "dev"
+        menu.addItem(NSMenuItem(title: "WinTab \(version)", action: nil, keyEquivalent: ""))
+
+        if let pending = updateGate?.pendingVersion {
+            let installItem = NSMenuItem(title: "Redémarrer pour installer v\(pending)",
+                                         action: #selector(installUpdate), keyEquivalent: "")
+            installItem.target = self
+            menu.addItem(installItem)
+        } else if updater?.isEnabled == true {
+            let checkItem = NSMenuItem(title: "Rechercher les mises à jour…",
+                                       action: #selector(checkForUpdates), keyEquivalent: "")
+            checkItem.target = self
+            menu.addItem(checkItem)
+        } else {
+            menu.addItem(NSMenuItem(title: "Mises à jour désactivées (build local)",
+                                    action: nil, keyEquivalent: ""))
+        }
+        if updater?.isEnabled == true {
+            let autoItem = NSMenuItem(title: "Installer automatiquement les mises à jour",
+                                      action: #selector(toggleAutoInstall), keyEquivalent: "")
+            autoItem.target = self
+            autoItem.state = Preferences.autoInstallUpdates ? .on : .off
+            menu.addItem(autoItem)
+        }
+        menu.addItem(.separator())
 
         let cmdItem = NSMenuItem(title: "Raccourci : ⌘ + Tab",
                                  action: #selector(setCommand), keyEquivalent: "")
@@ -136,6 +167,16 @@ final class StatusItemController {
         } catch {
             NSLog("WinTab: launch-at-login toggle failed: \(error)")
         }
+        rebuildMenu()
+    }
+
+    @objc private func checkForUpdates() { updater?.checkForUpdates() }
+
+    @objc private func installUpdate() { updateGate?.installNow() }
+
+    @objc private func toggleAutoInstall() {
+        Preferences.autoInstallUpdates.toggle()
+        updateGate?.autoInstall = Preferences.autoInstallUpdates
         rebuildMenu()
     }
 

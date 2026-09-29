@@ -44,6 +44,7 @@ enum Preferences {
     private static let orientationKey = "appearance.orientation"
     private static let includeMinimizedKey = "behavior.includeMinimized"
     private static let groupByAppKey = "behavior.groupByApp"
+    private static let autoInstallUpdatesKey = "updates.autoInstall"
 
     static var shortcut: ShortcutConfig {
         get {
@@ -87,5 +88,14 @@ enum Preferences {
     static var groupByApp: Bool {
         get { UserDefaults.standard.bool(forKey: groupByAppKey) }  // default: off
         set { UserDefaults.standard.set(newValue, forKey: groupByAppKey) }
+    }
+
+    static var autoInstallUpdates: Bool {
+        get {
+            let d = UserDefaults.standard
+            guard d.object(forKey: autoInstallUpdatesKey) != nil else { return true }  // default: on
+            return d.bool(forKey: autoInstallUpdatesKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: autoInstallUpdatesKey) }
     }
 }

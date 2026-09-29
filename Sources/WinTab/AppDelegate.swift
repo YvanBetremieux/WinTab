@@ -12,12 +12,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
     private let mruTracker = WorkspaceMRUTracker()
     private let statusController = StatusItemController()
     private lazy var controller = SwitcherController(view: panel, actions: actions)
+    private let updateGate = UpdateInstallGate(autoInstall: Preferences.autoInstallUpdates)
+    private lazy var updater = SparkleUpdater(gate: updateGate)
 
-    private var isOpen = false
+    /// Every open/close path goes through here, so the update gate never misses
+    /// a close (commit, Esc, click, last window closed, aborted open).
+    private var isOpen = false {
+        didSet {
+            guard isOpen != oldValue else { return }
+            if isOpen { updateGate.switcherOpened() } else { updateGate.switcherClosed() }
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
+        statusController.updater = updater
+        statusController.updateGate = updateGate
+        updateGate.onPendingChange = { [weak self] _ in self?.statusController.refresh() }
         statusController.install()
         statusController.onShortcutChange = { [weak self] config in
             self?.hotkey.config = config
