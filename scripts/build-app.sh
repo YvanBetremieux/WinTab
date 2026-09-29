@@ -22,29 +22,65 @@ echo "==> Toolchain: $("$SWIFT" --version 2>/dev/null | head -1)"
 
 APP="WinTab"
 BUNDLE_ID="com.yvanb.wintab"
-# Overridden by the release workflow with the tag (v1.2.3 -> 1.2.3).
-VERSION="${VERSION:-1.0}"
-RELEASE_BIN=".build/release/$APP"
 APP_DIR="$APP.app"
 INSTALL_DIR="/Applications"
 
+# Version: major.minor from VERSION; the release workflow sets the full version
+# (1.0.<run>) and the build number (<run>), which Sparkle requires to increase.
+WINTAB_VERSION="${WINTAB_VERSION:-$(tr -d '[:space:]' < VERSION).0}"
+WINTAB_BUILD="${WINTAB_BUILD:-0}"
+
 # Stable signing identity so macOS keeps Accessibility / Screen-Recording
-# permissions across rebuilds. Falls back to ad-hoc if the cert is missing.
-SIGN_IDENTITY="WinTab Dev"
+# permissions across rebuilds *and* across Sparkle updates. Locally it falls back
+# to ad-hoc; the release workflow sets WINTAB_REQUIRE_IDENTITY=1 so a missing
+# certificate fails the release instead of shipping an ad-hoc build.
+SIGN_IDENTITY="${WINTAB_SIGN_IDENTITY:-WinTab Dev}"
 if ! security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
+    if [ "${WINTAB_REQUIRE_IDENTITY:-0}" = "1" ]; then
+        echo "!! Signing identity '$SIGN_IDENTITY' not found and WINTAB_REQUIRE_IDENTITY=1."
+        exit 1
+    fi
     echo "!! Signing identity '$SIGN_IDENTITY' not found."
     echo "!! Run ./scripts/make-signing-cert.sh once to keep permissions across builds."
     echo "!! Falling back to ad-hoc signing (permissions WILL reset each build)."
     SIGN_IDENTITY="-"
 fi
 
+# Sparkle is only switched on when a feed is given (the release workflow).
+# Local builds have no feed, so a release never overwrites a development build.
+SPARKLE_KEYS=""
+if [ -n "${WINTAB_FEED_URL:-}" ]; then
+    SPARKLE_KEYS="    <key>SUFeedURL</key><string>$WINTAB_FEED_URL</string>
+    <key>SUPublicEDKey</key><string>$(tr -d '[:space:]' < scripts/sparkle-public-key.txt)</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUAutomaticallyUpdate</key><true/>"
+fi
+
 echo "==> swift build -c release"
 "$SWIFT" build -c release
+BIN_DIR="$("$SWIFT" build -c release --show-bin-path)"
 
-echo "==> Assembling $APP_DIR"
+echo "==> Assembling $APP_DIR ($WINTAB_VERSION / $WINTAB_BUILD)"
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
-cp "$RELEASE_BIN" "$APP_DIR/Contents/MacOS/$APP"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Frameworks" "$APP_DIR/Contents/Resources"
+cp "$BIN_DIR/$APP" "$APP_DIR/Contents/MacOS/$APP"
+
+# Sparkle.framework: SwiftPM copies it next to the binary; fall back to the
+# macOS slice of the xcframework.
+SPARKLE_FW="$BIN_DIR/Sparkle.framework"
+if [ ! -d "$SPARKLE_FW" ]; then
+    SPARKLE_FW="$(find .build/artifacts -path '*macos*' -name Sparkle.framework -type d | head -1)"
+fi
+if [ ! -d "$SPARKLE_FW" ]; then
+    echo "!! Sparkle.framework not found in .build — the app would crash at launch."
+    exit 1
+fi
+cp -R "$SPARKLE_FW" "$APP_DIR/Contents/Frameworks/"
+
+# dyld looks for @rpath/Sparkle.framework; point it at Contents/Frameworks.
+if ! otool -l "$APP_DIR/Contents/MacOS/$APP" | grep '@loader_path/../Frameworks' >/dev/null; then
+    install_name_tool -add_rpath '@loader_path/../Frameworks' "$APP_DIR/Contents/MacOS/$APP"
+fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -55,18 +91,31 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>$APP</string>
     <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleShortVersionString</key><string>$WINTAB_VERSION</string>
+    <key>CFBundleVersion</key><string>$WINTAB_BUILD</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>WinTab affiche un aperçu de vos fenêtres ouvertes.</string>
+$SPARKLE_KEYS
 </dict>
 </plist>
 PLIST
 
+# Inside-out signing, in the order Sparkle documents: nested helpers, then the
+# framework, then the app. --deep is not used (deprecated for signing).
 echo "==> Signing with identity: $SIGN_IDENTITY"
-codesign --force --deep --sign "$SIGN_IDENTITY" --options runtime "$APP_DIR"
+sign() { codesign --force --sign "$SIGN_IDENTITY" --options runtime "$@"; }
+FW="$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/B"
+for nested in "$FW/XPCServices/Installer.xpc" "$FW/Autoupdate" "$FW/Updater.app"; do
+    if [ -e "$nested" ]; then sign "$nested"; fi
+done
+if [ -e "$FW/XPCServices/Downloader.xpc" ]; then
+    sign --preserve-metadata=entitlements "$FW/XPCServices/Downloader.xpc"
+fi
+sign "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+sign "$APP_DIR"
+codesign --verify --strict --deep "$APP_DIR"
 
 if [ "${1:-}" = "--install" ]; then
     echo "==> Installing to $INSTALL_DIR and relaunching"
